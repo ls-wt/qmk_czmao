@@ -27,6 +27,31 @@ ifneq ($(findstring MKL26Z64, $(MCU)),)
   BOARD ?= PJRC_TEENSY_LC
 endif
 
+# AT32F405 系列配置
+ifneq ($(findstring AT32F405, $(MCU)),)
+    MCU = cortex-m4
+    ARMV = 7
+    MCU_FAMILY = AT32
+    MCU_SERIES = AT32F405
+    MCU_LDSCRIPT ?= AT32F405xE
+    MCU_STARTUP ?= at32f405
+    BOARD ?= GENERIC_AT32_F405XX
+    USE_FPU ?= yes
+    AT32_BOOTLOADER_ADDRESS ?= 0x1FFFAC00
+    PLATFORM_KEY = chibios
+    
+    # Flash 大小变体
+    ifeq ($(strip $(MCU_LDSCRIPT)),AT32F405xB)
+        MCU_FLASH ?= 128
+    else ifeq ($(strip $(MCU_LDSCRIPT)),AT32F405xC)
+        MCU_FLASH ?= 256
+    else ifeq ($(strip $(MCU_LDSCRIPT)),AT32F405xE)
+        MCU_FLASH ?= 512
+    else
+        MCU_FLASH ?= 512
+    endif
+endif
+
 ifneq ($(findstring MK20DX128, $(MCU)),)
   # Cortex version
   MCU = cortex-m4
@@ -511,41 +536,6 @@ ifneq ($(findstring STM32F446, $(MCU)),)
   EEPROM_DRIVER ?= transient
 endif
 
-ifneq ($(findstring STM32G0B1, $(MCU)),)
-  # Cortex version
-  MCU = cortex-m0plus
-
-  # ARM version, CORTEX-M0/M1 are 6, CORTEX-M3/M4/M7 are 7
-  ARMV = 6
-
-  ## chip/board settings
-  # - the next two should match the directories in
-  #   <chibios[-contrib]>/os/hal/ports/$(MCU_PORT_NAME)/$(MCU_SERIES)
-  #   OR
-  #   <chibios[-contrib]>/os/hal/ports/$(MCU_FAMILY)/$(MCU_SERIES)
-  MCU_FAMILY = STM32
-  MCU_SERIES = STM32G0xx
-
-  # Linker script to use
-  # - it should exist either in <chibios>/os/common/startup/ARMCMx/compilers/GCC/ld/
-  #   or <keyboard_dir>/ld/
-  MCU_LDSCRIPT ?= STM32G0B1xB
-
-  # Startup code to use
-  #  - it should exist in <chibios>/os/common/startup/ARMCMx/compilers/GCC/mk/
-  MCU_STARTUP ?= stm32g0xx
-
-  # Board: it should exist either in <chibios>/os/hal/boards/,
-  # <keyboard_dir>/boards/, or drivers/boards/
-  BOARD ?= GENERIC_STM32_G0B1XB
-
-  # UF2 settings
-  UF2_FAMILY ?= STM32G0
-
-  # Bootloader address for STM32 DFU
-  STM32_BOOTLOADER_ADDRESS ?= 0x1FFF0000
-endif
-
 ifneq ($(findstring STM32G431, $(MCU)),)
   # Cortex version
   MCU = cortex-m4
@@ -844,37 +834,6 @@ ifneq ($(findstring WB32FQ95, $(MCU)),)
   WB32_BOOTLOADER_ADDRESS ?= 0x1FFFE000
 endif
 
-ifneq ($(findstring AT32F405, $(MCU)),)
-  # Cortex version
-  MCU = cortex-m4
-
-  # ARM version
-  ARMV = 7
-
-  ## chip/board settings
-  MCU_FAMILY = AT32
-  MCU_SERIES = AT32F402_5xx
-
-  # AT32F405 HAL port lives in ChibiOS-Contrib
-  USE_CHIBIOS_CONTRIB = yes
-
-  # Linker script (256KB Flash for RC)
-  MCU_LDSCRIPT ?= AT32F405xC
-
-  # Startup code
-  MCU_STARTUP ?= at32f402_5xx
-
-  # Board
-  BOARD ?= GENERIC_AT32_F405XX
-
-  USE_FPU ?= yes
-
-  UF2_FAMILY ?= AT32F405_7
-
-  # Bootloader address for AT32 DFU
-  AT32_BOOTLOADER_ADDRESS ?= 0x1FFFAC00
-endif
-
 ifneq ($(findstring AT32F415, $(MCU)),)
   # Cortex version
   MCU = cortex-m4
@@ -909,37 +868,18 @@ ifneq ($(findstring AT32F415, $(MCU)),)
   AT32_BOOTLOADER_ADDRESS ?= 0x1FFFAC00
 endif
 
-ifneq ($(findstring AT32F403A, $(MCU)),)
-  # Cortex version
-  MCU = cortex-m4
-
-  # ARM version, CORTEX-M0/M1 are 6, CORTEX-M3/M4/M7 are 7
-  ARMV = 7
-
-  ## chip/board settings
-  # - the next two should match the directories in
-  #   <chibios[-contrib]>/os/hal/ports/$(MCU_FAMILY)/$(MCU_SERIES)
-  MCU_FAMILY = AT32
-  MCU_SERIES = AT32F403_7xx
-
-  # AT32F403A HAL port lives in ChibiOS-Contrib (zhaqian12 snapshot)
-  USE_CHIBIOS_CONTRIB = yes
-
-  # Linker script to use (provided by ChibiOS-Contrib)
-  MCU_LDSCRIPT ?= AT32F403AxC
-
-  # Startup code to use (provided by ChibiOS-Contrib)
-  MCU_STARTUP ?= at32f403_7xx
-
-  # Board: platforms/chibios/boards/GENERIC_AT32_F403A
-  BOARD ?= GENERIC_AT32_F403A
-
-  USE_FPU ?= yes
-
-  UF2_FAMILY ?= AT32F403_7
-
-  # Bootloader address for AT32 DFU (ROM DFU base for F403A)
-  AT32_BOOTLOADER_ADDRESS ?= 0x1FFFB000
+# AT32F405 配置 - 复用 F415 的所有文件和配置
+ifneq ($(findstring AT32F405, $(MCU)),)
+    MCU = cortex-m4
+    ARMV = 7
+    MCU_FAMILY = AT32
+    MCU_SERIES = AT32F415    # 关键：直接使用 F415 的系列名
+    MCU_LDSCRIPT ?= AT32F415xB
+    MCU_STARTUP ?= at32f415   # 关键：使用 F415 的启动文件
+    BOARD := $(BOARD)
+    USE_FPU = yes
+    AT32_BOOTLOADER_ADDRESS ?= 0x1FFFAC00
+    PLATFORM_KEY = chibios
 endif
 
 ifneq ($(findstring GD32VF103, $(MCU)),)

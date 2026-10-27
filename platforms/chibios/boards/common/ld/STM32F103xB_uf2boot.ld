@@ -19,8 +19,7 @@
  */
 MEMORY
 {
-    flash0 (rx) : org = 0x08000000 + 16K, len = 128k - 16K - 1K
-    calib (r)   : org = 0x0801FC00, len = 1K
+    flash0 (rx) : org = 0x08000000 + 16K, len = 128k - 16K
     flash1 (rx) : org = 0x00000000, len = 0
     flash2 (rx) : org = 0x00000000, len = 0
     flash3 (rx) : org = 0x00000000, len = 0

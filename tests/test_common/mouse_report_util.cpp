@@ -18,7 +18,6 @@
 #include <cstdint>
 #include <vector>
 #include <algorithm>
-#include <iomanip>
 
 using namespace testing;
 

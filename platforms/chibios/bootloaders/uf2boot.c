@@ -1,9 +1,9 @@
 // Copyright 2023 QMK
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <stdint.h>
-#include <hal.h>
 #include "bootloader.h"
+#include <stdint.h>
+#include <ch.h>
 
 // From mmoskal/uf2-stm32f103's backup.c
 #define MAGIC_BOOT 0x544F4F42UL

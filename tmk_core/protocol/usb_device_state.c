@@ -78,7 +78,7 @@ void usb_device_state_set_protocol(usb_hid_protocol_t protocol) {
     notify_usb_device_state_change(usb_device_state);
 }
 
-inline usb_hid_protocol_t usb_device_state_get_protocol(void) {
+inline usb_hid_protocol_t usb_device_state_get_protocol() {
     return usb_device_state.protocol;
 }
 
