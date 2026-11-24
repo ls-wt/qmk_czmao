@@ -23,9 +23,11 @@ jobs:
 
       - name: Toolchain
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq gcc-arm-none-eabi binutils-arm-none-eabi python3-pip >/dev/null
-          pip3 install -q qmk || pip3 install -q --break-system-packages qmk
+          set -x
+          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi binutils-arm-none-eabi \
+            || (sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends \
+                gcc-arm-none-eabi binutils-arm-none-eabi)
+          pip3 install -q --no-cache-dir qmk || pip3 install -q --no-cache-dir --break-system-packages qmk
 
       - name: Build
         working-directory: qmk
