@@ -13,6 +13,13 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
+      - name: Pin ChibiOS to 21.11
+        run: |
+          git -C lib/chibios fetch --depth 1 origin 11edb1610980f213b9f83161e1715a46fb7e4c51
+          git -C lib/chibios checkout -q FETCH_HEAD
+          git -C lib/chibios-contrib fetch --depth 1 origin 9d7a7f904ed135e3459cf6d602db56a26872df6b
+          git -C lib/chibios-contrib checkout -q FETCH_HEAD
+
       - name: Toolchain
         run: |
           sudo apt-get update -qq
