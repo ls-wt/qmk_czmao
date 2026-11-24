@@ -24,21 +24,24 @@ jobs:
       - name: Toolchain
         run: |
           sudo apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi \
-            libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib \
+            libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib dfu-util \
             || (sudo apt-get update -qq && sudo apt-get install -y \
                 gcc-arm-none-eabi binutils-arm-none-eabi \
-                libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib)
+                libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib dfu-util)
           pip3 install -q --no-cache-dir qmk || pip3 install -q --no-cache-dir --break-system-packages qmk
 
-      - name: Build
+      - name: Build ELF
         working-directory: qmk
-        run: qmk compile -kb czmao/ds17/r6 -km via
+        run: make czmao/ds17/r6:via:elf COLOR=false
 
-      - name: Collect
+      - name: Make bin
+        working-directory: qmk
         run: |
-          mkdir -p out
-          cp -v qmk/.build/*.bin out/
-          ls -la out
+          mkdir -p ../out
+          ELF=$(ls -1 .build/*.elf build/*.elf 2>/dev/null | head -1)
+          echo "ELF = $ELF"
+          arm-none-eabi-objcopy -O binary "$ELF" ../out/czmao_ds17_r6_via.bin
+          ls -la ../out
 
       - name: Upload
         uses: actions/upload-artifact@v4
