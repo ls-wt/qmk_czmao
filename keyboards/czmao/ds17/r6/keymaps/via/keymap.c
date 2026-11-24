@@ -47,10 +47,23 @@ static uint8_t  noise_prob        = 1;      // 方向键噪声概率 %
 static uint32_t max_tail_interval = 8000;   // 走神间隔上限(ms)
 
 /* ===================== 工具函数 ===================== */
+/* 自带的小型伪随机（线性同余），不依赖 QMK 或 libc 的随机函数，
+   避免不同 QMK 版本之间 random16 / rand 的差异 */
+static uint32_t rng_state = 0x12345678u;
+
+static void rng_seed(uint32_t s) {
+    rng_state = s ? s : 0x12345678u;
+}
+
+static uint16_t rnd16(void) {
+    rng_state = rng_state * 1664525u + 1013904223u;
+    return (uint16_t)(rng_state >> 16);
+}
+
 static int16_t gaussian_100(void) {
     int16_t sum = 0;
     for (uint8_t i = 0; i < 12; i++) {
-        sum += random16() % 101;
+        sum += rnd16() % 101;
     }
     return sum - 600;
 }
@@ -65,7 +78,7 @@ static uint32_t normal_clamped(uint32_t mean, uint32_t sd, uint32_t min, uint32_
 
 static uint32_t rand_range(uint32_t min, uint32_t max) {
     if (max <= min) return min;
-    return min + (random16() % (max - min + 1));
+    return min + (rnd16() % (max - min + 1));
 }
 
 /* 只释放宏自己按下的键，不动你手上正按的键 */
@@ -106,7 +119,7 @@ static uint32_t generate_interval(void) {
     uint32_t mean = effective_mean();
     uint32_t sd   = (mean * rand_range(12, 25)) / 100;
 
-    if ((random16() % 100) < tail_prob) {
+    if ((rnd16() % 100) < tail_prob) {
         uint32_t raw = normal_clamped(mean, sd, 2000, 6000) + rand_range(800, 4000);
         return raw > max_tail_interval ? max_tail_interval : raw;
     }
@@ -123,7 +136,7 @@ static void randomize_params(void) {
 }
 
 static void start_macro(void) {
-    random16_set_seed((uint16_t)timer_read32());
+    rng_seed(timer_read32());
     session_duration = rand_range(15, 40) * 60000UL;  // 15-40 分钟自动收工
     session_start    = timer_read32();
     macro_on         = true;
@@ -198,11 +211,11 @@ void matrix_scan_user(void) {
             if (now >= key_release_time) {
                 unregister_code(attack_key);
 
-                uint16_t roll = random16() % 100;
+                uint16_t roll = rnd16() % 100;
 
                 if (roll < noise_prob) {
                     uint16_t dirs[] = {KC_LEFT, KC_RIGHT, KC_UP, KC_DOWN};
-                    noise_keycode    = dirs[random16() % 4];
+                    noise_keycode    = dirs[rnd16() % 4];
                     register_code(noise_keycode);
                     key_release_time = now + rand_range(20, 50);
                     macro_state      = ST_NOISE;
