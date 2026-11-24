@@ -1,155 +1,108 @@
 // ============================================================
-//  CZMAO DS17 R3（右手版）· VIA keymap + 自动攻击宏
+//  CZMAO DS17 R3（右手版）· 一键攻击 v6（拟人节奏）
 //
-//  放置位置（GitHub 网页里直接覆盖这个文件）：
+//  放置位置：
 //    keyboards/czmao/ds17/r3/keymaps/via/keymap.c
 //
-//  开关方式（与 r6 版一致）：
-//    按住左上角 NumLock（FN 层） + 数字 9  → 开启 / 关闭
-//    按住左上角 NumLock（FN 层） + 数字 3  → 立刻停止
+//  用法：
+//    按住左上角 NumLock + 点 9  → 开始
+//    按住左上角 NumLock + 点 3  → 停止
+//    运行中按小键盘任何键        → 让路，松手后自动恢复
 //
-//  若你的 PCB 丝印是 R6 而不是 R3，把路径里的 r3 换成 r6，内容不变。
+//  设计目标：模拟人的施法节奏
+//    · 施法按 CD 3 秒走，每次在 CD 好之后 120~420ms 才按下
+//    · 单次按下 120~320ms 后松开，等待下一次
+//    · 4% 概率"漏一拍"（多等 1.2~2.6 秒，像走神）
+//    · 你自己按键时立刻让路，松手 0.5 秒后恢复
+//    · 不设自动休息，捡东西时手动停
 // ============================================================
 #include QMK_KEYBOARD_H
 
-/* ================= 宏开关用的自定义键码 ================= */
+/* ================= 键码 ================= */
 enum my_keycodes {
-    MACRO_TOGGLE = SAFE_RANGE,  // 开 / 关
-    MACRO_STOP,                 // 立刻停
+    MACRO_TOGGLE = SAFE_RANGE,
+    MACRO_STOP,
 };
 
-/* ===================== 宏状态机 ===================== */
-typedef enum {
-    ST_ATTACKING,
-    ST_HOLDING,
-    ST_PAUSING,
-    ST_NOISE
-} macro_state_t;
+/* ===================== 参数区（想调就改这里） ===================== */
+static uint16_t attack_key = KC_C;      // 攻击键
 
-static bool          macro_on          = false;
-static macro_state_t macro_state       = ST_ATTACKING;
-static uint32_t      session_start     = 0;
-static uint32_t      session_duration  = 0;
-static uint32_t      next_action_time  = 0;
-static uint32_t      key_release_time  = 0;
-static uint32_t      next_param_change = 0;
-static uint16_t      noise_keycode     = 0;
+static uint32_t cd_ms      = 3000;      // 技能 CD
 
-/* ========== 参数区，想调直接改这里 ========== */
-static uint16_t attack_key        = KC_C;   // 攻击按键
-static uint16_t base_mean         = 2200;   // 攻击间隔均值(ms)
-static uint16_t press_mean        = 150;    // 按压时长均值(ms)
-static uint16_t press_sd          = 40;     // 按压时长标准差(ms)
-static uint8_t  pause_prob        = 5;      // 犹豫概率 %
-static uint8_t  tail_prob         = 3;      // 走神长间隔概率 %
-static uint8_t  noise_prob        = 1;      // 方向键噪声概率 %
-static uint32_t max_tail_interval = 8000;   // 走神间隔上限(ms)
+static uint32_t extra_min  = 120;       // CD 好后延迟下限(ms)
+static uint32_t extra_max  = 420;       // CD 好后延迟上限(ms)
 
-/* ===================== 工具函数 ===================== */
-/* 自带的小型伪随机（线性同余），不依赖 QMK 或 libc 的随机函数 */
-static uint32_t rng_state = 0x12345678u;
+static uint32_t press_min  = 120;       // 单次按住时长下限(ms)
+static uint32_t press_max  = 320;       // 单次按住时长上限(ms)
 
-static void rng_seed(uint32_t s) {
-    rng_state = s ? s : 0x12345678u;
-}
+static uint8_t  skip_prob  = 4;         // 漏一拍的概率(%)
 
+static uint32_t skip_add_min = 1200;    // 漏拍时多等多久(ms)
+static uint32_t skip_add_max = 2600;
+
+static uint32_t suspend_ms = 500;       // 你按键时让路时长(ms)
+
+/* ===================== 状态 ===================== */
+static bool     macro_on     = false;
+static bool     pressing     = false;
+static uint32_t press_start  = 0;
+static uint32_t press_until  = 0;
+static uint32_t next_press   = 0;
+static uint32_t suspend_until = 0;
+static uint32_t rng_state    = 0x12345678u;
+
+/* ===================== 随机 ===================== */
 static uint16_t rnd16(void) {
     rng_state = rng_state * 1664525u + 1013904223u;
     return (uint16_t)(rng_state >> 16);
 }
 
-static int16_t gaussian_100(void) {
-    int16_t sum = 0;
-    for (uint8_t i = 0; i < 12; i++) {
-        sum += rnd16() % 101;
+static uint32_t rand_range(uint32_t a, uint32_t b) {
+    if (b <= a) return a;
+    return a + (rnd16() % (b - a + 1));
+}
+
+/* ===================== 按键动作 ===================== */
+static void attack_press(void) {
+    if (!pressing) {
+        register_code(attack_key);
+        pressing    = true;
+        press_start = timer_read32();
+        press_until = press_start + rand_range(press_min, press_max);
     }
-    return sum - 600;
 }
 
-static uint32_t normal_clamped(uint32_t mean, uint32_t sd, uint32_t min, uint32_t max) {
-    int32_t g = gaussian_100();
-    int32_t v = (int32_t)mean + (g * (int32_t)sd) / 100;
-    if (v < (int32_t)min) v = (int32_t)min;
-    if (v > (int32_t)max) v = (int32_t)max;
-    return (uint32_t)v;
-}
-
-static uint32_t rand_range(uint32_t min, uint32_t max) {
-    if (max <= min) return min;
-    return min + (rnd16() % (max - min + 1));
-}
-
-/* 只释放宏自己按下的键，不动你手上正按的键 */
-static void stop_macro(void) {
-    if (macro_state == ST_HOLDING) {
+static void attack_release(void) {
+    if (pressing) {
         unregister_code(attack_key);
-    } else if (macro_state == ST_NOISE && noise_keycode) {
-        unregister_code(noise_keycode);
+        pressing = false;
     }
-    noise_keycode = 0;
-    macro_on      = false;
-    macro_state   = ST_ATTACKING;
 }
 
-/* 开局慢一点，后半段疲劳变慢 */
-static uint32_t effective_mean(void) {
-    uint32_t elapsed = timer_read32() - session_start;
-    uint32_t total   = session_duration;
-    if (total == 0) return base_mean;
+/* 安排下一次施法：CD + 人类延迟，偶尔漏一拍 */
+static void schedule_next(void) {
+    uint32_t base  = press_start + cd_ms;
+    uint32_t delay = rand_range(extra_min, extra_max);
 
-    int32_t start_factor = 100;
-    if (elapsed < 120000UL) {
-        start_factor = 115 - (int32_t)((elapsed * 15) / 120000UL);
+    if ((rnd16() % 100) < skip_prob) {
+        delay += rand_range(skip_add_min, skip_add_max);
     }
-
-    int32_t  fatigue_factor = 100;
-    uint32_t half           = total / 2;
-    if (half && elapsed > half) {
-        uint32_t late = elapsed - half;
-        int32_t  add  = (12 * (int32_t)late) / (int32_t)half;
-        fatigue_factor = 100 + add;
-    }
-
-    return ((uint32_t)base_mean * start_factor * fatigue_factor) / 10000UL;
-}
-
-static uint32_t generate_interval(void) {
-    uint32_t mean = effective_mean();
-    uint32_t sd   = (mean * rand_range(12, 25)) / 100;
-
-    if ((rnd16() % 100) < tail_prob) {
-        uint32_t raw = normal_clamped(mean, sd, 2000, 6000) + rand_range(800, 4000);
-        return raw > max_tail_interval ? max_tail_interval : raw;
-    }
-    return normal_clamped(mean, sd, 2000, 6000);
-}
-
-static void randomize_params(void) {
-    base_mean  = rand_range(2100, 2800);
-    press_mean = rand_range(80, 220);
-    press_sd   = rand_range(20, 60);
-    pause_prob = rand_range(3, 8);
-    tail_prob  = rand_range(1, 5);
-    noise_prob = rand_range(0, 2);
+    next_press = base + delay;
 }
 
 static void start_macro(void) {
-    rng_seed(timer_read32());
-    session_duration = rand_range(15, 40) * 60000UL;  // 15-40 分钟自动收工
-    session_start    = timer_read32();
-    macro_on         = true;
-    macro_state      = ST_ATTACKING;
-    noise_keycode    = 0;
-    randomize_params();
+    macro_on      = true;
+    suspend_until = 0;
+    attack_press();
+}
 
-    next_action_time  = session_start + generate_interval();
-    next_param_change = session_start + rand_range(180, 360) * 1000UL;
+static void stop_macro(void) {
+    attack_release();
+    macro_on      = false;
+    suspend_until = 0;
 }
 
 /* ===================== 键位表 ===================== */
-/* FN 层里两处改动：
-     KC_CALC -> MACRO_TOGGLE
-     KC_N    -> MACRO_STOP                                     */
 const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
     [0] = LAYOUT_numberpad_5x4(
         LT(1,KC_NUM), KC_PSLS, KC_PAST, KC_PMNS,
@@ -212,93 +165,62 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 /* ===================== 主循环 ===================== */
 void matrix_scan_user(void) {
     if (!macro_on) return;
+
     uint32_t now = timer_read32();
 
-    if (now - session_start >= session_duration) {
-        stop_macro();
+    /* ① 你在用小键盘 → 让路 */
+    if (now < suspend_until) {
+        attack_release();
         return;
     }
 
-    if (now >= next_param_change) {
-        randomize_params();
-        next_param_change = now + rand_range(180, 360) * 1000UL;
+    /* ② 按键保持中，到时间就松开 */
+    if (pressing) {
+        if (now >= press_until) {
+            attack_release();
+            schedule_next();
+        }
+        return;
     }
 
-    switch (macro_state) {
-        case ST_PAUSING:
-            if (now >= next_action_time) {
-                macro_state      = ST_ATTACKING;
-                next_action_time = now + generate_interval();
-            }
-            break;
-
-        case ST_HOLDING:
-            if (now >= key_release_time) {
-                unregister_code(attack_key);
-
-                uint16_t roll = rnd16() % 100;
-
-                if (roll < noise_prob) {
-                    uint16_t dirs[] = {KC_LEFT, KC_RIGHT, KC_UP, KC_DOWN};
-                    noise_keycode    = dirs[rnd16() % 4];
-                    register_code(noise_keycode);
-                    key_release_time = now + rand_range(20, 50);
-                    macro_state      = ST_NOISE;
-                } else if (roll < noise_prob + pause_prob) {
-                    macro_state      = ST_PAUSING;
-                    next_action_time = now + normal_clamped(2000, 800, 800, 5000);
-                } else {
-                    macro_state      = ST_ATTACKING;
-                    next_action_time = now + generate_interval();
-                }
-            }
-            break;
-
-        case ST_NOISE:
-            if (now >= key_release_time) {
-                unregister_code(noise_keycode);
-                noise_keycode    = 0;
-                macro_state      = ST_ATTACKING;
-                next_action_time = now + generate_interval();
-            }
-            break;
-
-        case ST_ATTACKING:
-            if (now >= next_action_time) {
-                register_code(attack_key);
-                key_release_time = now + normal_clamped(press_mean, press_sd, 50, 350);
-                macro_state      = ST_HOLDING;
-            }
-            break;
+    /* ③ 到点施法 */
+    if (now >= next_press) {
+        attack_press();
     }
 }
 
-/* ===================== 开关键处理 ===================== */
+/* ===================== 开关与让路 ===================== */
 bool process_record_user(uint16_t keycode, keyrecord_t *record) {
-    if (!record->event.pressed) return true;
-
-    if (keycode == MACRO_TOGGLE) {
-        if (macro_on) {
-            stop_macro();
-        } else {
-            start_macro();
+    if (record->event.pressed) {
+        if (keycode == MACRO_TOGGLE) {
+            if (macro_on) {
+                stop_macro();
+            } else {
+                start_macro();
+            }
+            suspend_until = timer_read32() + 200;
+            return false;
         }
-        return false;
-    }
-    if (keycode == MACRO_STOP) {
-        stop_macro();
-        return false;
+        if (keycode == MACRO_STOP) {
+            stop_macro();
+            suspend_until = timer_read32() + 200;
+            return false;
+        }
+        if (macro_on) {
+            attack_release();
+            suspend_until = timer_read32() + suspend_ms;
+        }
+    } else if (macro_on && suspend_until && timer_read32() >= suspend_until) {
+        suspend_until = 0;
+        next_press    = timer_read32() + rand_range(150, 500);  // 松手后像人一样稍等再按
     }
     return true;
 }
 
-/* ===================== RGB 指示（保留原厂逻辑） ===================== */
-// 用 basic 指示器钩子：QMK 在整帧渲染结束后只调用一次（见 quantum/rgb_matrix/rgb_matrix.c
-// rgb_task_state == FLUSHING 分支），此处的写入即为本帧最终值，不会与动画逐分片互相覆盖导致爆闪。
+/* ===================== RGB 指示 ===================== */
 bool rgb_matrix_indicators_user(void) {
     uint8_t layer = get_highest_layer(layer_state | default_layer_state);
 
-    // 非默认层：整板铺层色（保持原有观感）
     if (layer) {
         for (uint8_t i = 0; i < RGB_MATRIX_LED_COUNT; i++) {
             switch (layer) {
@@ -314,12 +236,10 @@ bool rgb_matrix_indicators_user(void) {
         }
     }
 
-    // numlock 指示：必须最后写，保证任何层都生效（不再被层色覆盖）
     if (host_keyboard_led_state().num_lock) {
         rgb_matrix_set_color(0, 255, 255, 255);
     }
 
-    // 宏运行中：整板暗橙，一眼就能看出它还在跑
     if (macro_on) {
         for (uint8_t i = 0; i < RGB_MATRIX_LED_COUNT; i++) {
             rgb_matrix_set_color(i, 60, 25, 0);
