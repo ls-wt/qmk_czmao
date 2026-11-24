@@ -1,8 +1,6 @@
-name: Build DS17 R6 VIA
-
+name: Build DS17 VIA (r3 + r6)
 on:
   workflow_dispatch:
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -11,7 +9,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: src
-
       - name: Fetch official QMK and drop in the board
         run: |
           git clone --depth 1 https://github.com/qmk/qmk_firmware.git qmk
@@ -20,7 +17,6 @@ jobs:
           rm -rf keyboards/czmao
           cp -r ../src/keyboards/czmao keyboards/czmao
           rm -rf keyboards/czmao/ds17/ds17r6_uf2
-
       - name: Toolchain
         run: |
           sudo apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi \
@@ -29,23 +25,21 @@ jobs:
                 gcc-arm-none-eabi binutils-arm-none-eabi \
                 libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib dfu-util)
           pip3 install -q --no-cache-dir qmk || pip3 install -q --no-cache-dir --break-system-packages qmk
-
-      - name: Build ELF
+      - name: Build r3 and r6 ELF
         working-directory: qmk
-        run: make czmao/ds17/r6:via:elf COLOR=false
-
-      - name: Make bin
+        run: |
+          make czmao/ds17/r3:via:elf COLOR=false
+          make czmao/ds17/r6:via:elf COLOR=false
+      - name: Make bins
         working-directory: qmk
         run: |
           mkdir -p ../out
-          ELF=$(ls -1 .build/*.elf build/*.elf 2>/dev/null | head -1)
-          echo "ELF = $ELF"
-          arm-none-eabi-objcopy -O binary "$ELF" ../out/czmao_ds17_r6_via.bin
+          arm-none-eabi-objcopy -O binary .build/czmao_ds17_r3_via.elf ../out/czmao_ds17_r3_via.bin
+          arm-none-eabi-objcopy -O binary .build/czmao_ds17_r6_via.elf ../out/czmao_ds17_r6_via.bin
           ls -la ../out
-
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: ds17-r6-via
+          name: ds17-both
           path: out/
           if-no-files-found: error
