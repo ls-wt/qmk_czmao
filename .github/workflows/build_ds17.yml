@@ -23,10 +23,11 @@ jobs:
 
       - name: Toolchain
         run: |
-          set -x
-          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi binutils-arm-none-eabi \
-            || (sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends \
-                gcc-arm-none-eabi binutils-arm-none-eabi)
+          sudo apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi \
+            libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib \
+            || (sudo apt-get update -qq && sudo apt-get install -y \
+                gcc-arm-none-eabi binutils-arm-none-eabi \
+                libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib)
           pip3 install -q --no-cache-dir qmk || pip3 install -q --no-cache-dir --break-system-packages qmk
 
       - name: Build
