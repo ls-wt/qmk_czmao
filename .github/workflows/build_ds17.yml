@@ -7,18 +7,19 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout keyboard source
         uses: actions/checkout@v4
         with:
-          submodules: recursive
-          fetch-depth: 1
+          path: src
 
-      - name: Pin ChibiOS to 21.11
+      - name: Fetch official QMK and drop in the board
         run: |
-          git -C lib/chibios fetch --depth 1 origin 11edb1610980f213b9f83161e1715a46fb7e4c51
-          git -C lib/chibios checkout -q FETCH_HEAD
-          git -C lib/chibios-contrib fetch --depth 1 origin 9d7a7f904ed135e3459cf6d602db56a26872df6b
-          git -C lib/chibios-contrib checkout -q FETCH_HEAD
+          git clone --depth 1 https://github.com/qmk/qmk_firmware.git qmk
+          cd qmk
+          git submodule update --init --depth 1 lib/chibios lib/chibios-contrib lib/lufa lib/printf lib/vusb
+          rm -rf keyboards/czmao
+          cp -r ../src/keyboards/czmao keyboards/czmao
+          rm -rf keyboards/czmao/ds17/ds17r6_uf2
 
       - name: Toolchain
         run: |
@@ -27,12 +28,13 @@ jobs:
           pip3 install -q qmk || pip3 install -q --break-system-packages qmk
 
       - name: Build
-        run: qmk compile -kb czmao/ds17/r6 -km via -e COLOR=false
+        working-directory: qmk
+        run: qmk compile -kb czmao/ds17/r6 -km via
 
       - name: Collect
         run: |
           mkdir -p out
-          cp -v .build/*.bin out/
+          cp -v qmk/.build/*.bin out/
           ls -la out
 
       - name: Upload
