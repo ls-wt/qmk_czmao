@@ -1,57 +1,33 @@
 // ============================================================
-//  CZMAO DS17 R3（右手版）· 一键攻击 v6（拟人节奏）
+//  CZMAO DS17 R3（右手版）· 双宏 v8
 //
 //  放置位置：
 //    keyboards/czmao/ds17/r3/keymaps/via/keymap.c
 //
-//  用法：
-//    按住左上角 NumLock + 点 9  → 开始
-//    按住左上角 NumLock + 点 3  → 停止
-//    运行中按小键盘任何键        → 让路，松手后自动恢复
+//  ┌─────────────┬──────────────────┬──────────────────────────┐
+//  │  1 号宏     │ NumLock + 9      │ 攻击键 C，CD 3 秒        │
+//  │             │ NumLock + 3      │ 停止（两个宏都停）        │
+//  │             │                  │ 每 20~25 次左右挪一步     │
+//  ├─────────────┼──────────────────┼──────────────────────────┤
+//  │  2 号宏     │ NumLock + 8      │ 攻击键 F，CD 0.5 秒      │
+//  │             │ NumLock + 8      │ 再按一次停止              │
+//  └─────────────┴──────────────────┴──────────────────────────┘
 //
-//  设计目标：模拟人的施法节奏
-//    · 施法按 CD 3 秒走，每次在 CD 好之后 120~420ms 才按下
-//    · 单次按下 120~320ms 后松开，等待下一次
-//    · 4% 概率"漏一拍"（多等 1.2~2.6 秒，像走神）
-//    · 你自己按键时立刻让路，松手 0.5 秒后恢复
-//    · 不设自动休息，捡东西时手动停
+//  两个宏互斥：开一个会自动停掉另一个。
+//  运行中按小键盘任何键 → 让路 0.5 秒，松手后自动恢复。
 // ============================================================
 #include QMK_KEYBOARD_H
 
 /* ================= 键码 ================= */
 enum my_keycodes {
-    MACRO_TOGGLE = SAFE_RANGE,
-    MACRO_STOP,
+    MACRO1_TOGGLE = SAFE_RANGE,  // NumLock + 9
+    MACRO2_TOGGLE,               // NumLock + 8
+    MACRO_STOP,                  // NumLock + 3，两个都停
 };
 
-/* ===================== 参数区（想调就改这里） ===================== */
-static uint16_t attack_key = KC_C;      // 攻击键
-
-static uint32_t cd_ms      = 3000;      // 技能 CD
-
-static uint32_t extra_min  = 120;       // CD 好后延迟下限(ms)
-static uint32_t extra_max  = 420;       // CD 好后延迟上限(ms)
-
-static uint32_t press_min  = 120;       // 单次按住时长下限(ms)
-static uint32_t press_max  = 320;       // 单次按住时长上限(ms)
-
-static uint8_t  skip_prob  = 4;         // 漏一拍的概率(%)
-
-static uint32_t skip_add_min = 1200;    // 漏拍时多等多久(ms)
-static uint32_t skip_add_max = 2600;
-
-static uint32_t suspend_ms = 500;       // 你按键时让路时长(ms)
-
-/* ===================== 状态 ===================== */
-static bool     macro_on     = false;
-static bool     pressing     = false;
-static uint32_t press_start  = 0;
-static uint32_t press_until  = 0;
-static uint32_t next_press   = 0;
-static uint32_t suspend_until = 0;
-static uint32_t rng_state    = 0x12345678u;
-
 /* ===================== 随机 ===================== */
+static uint32_t rng_state = 0x12345678u;
+
 static uint16_t rnd16(void) {
     rng_state = rng_state * 1664525u + 1013904223u;
     return (uint16_t)(rng_state >> 16);
@@ -62,47 +38,204 @@ static uint32_t rand_range(uint32_t a, uint32_t b) {
     return a + (rnd16() % (b - a + 1));
 }
 
-/* ===================== 按键动作 ===================== */
-static void attack_press(void) {
-    if (!pressing) {
-        register_code(attack_key);
-        pressing    = true;
-        press_start = timer_read32();
-        press_until = press_start + rand_range(press_min, press_max);
+/* ===================== 阶段 ===================== */
+typedef enum {
+    PH_WAIT = 0,   // 等下次施法
+    PH_PRESS,      // 正按着攻击键
+    PH_MOVE_WAIT,  // 等施法硬直结束再挪步
+    PH_MOVE_1,     // 挪步第一段
+    PH_MOVE_2,     // 挪步第二段
+} phase_t;
+
+/* ===================== 宏结构 ===================== */
+typedef struct {
+    bool     on;
+    uint16_t key;            // 攻击键
+    uint32_t cd;             // 技能 CD
+    uint32_t extra_min;      // CD 后延迟
+    uint32_t extra_max;
+    uint32_t press_min;      // 按下时长
+    uint32_t press_max;
+    uint8_t  skip_prob;      // 漏一拍概率
+    uint32_t skip_min;       // 漏拍时额外等待
+    uint32_t skip_max;
+    bool     use_move;       // 是否插入挪步
+    uint16_t move_every_min; // 每多少下挪一次
+    uint16_t move_every_max;
+    uint32_t move_ms_min;    // 单方向挪步时长
+    uint32_t move_ms_max;
+    /* 运行状态 */
+    phase_t  phase;
+    uint32_t until;
+    uint32_t next_press;
+    uint32_t press_start;
+    uint16_t count;
+    uint16_t move_target;
+    uint32_t move_ms;
+    uint16_t mv1;
+    uint16_t mv2;
+} macro_t;
+
+/* ---- 1 号宏：C / 3 秒 CD / 带挪步 ---- */
+static macro_t m1 = {
+    .key = KC_C,
+    .cd = 3000,
+    .extra_min = 120, .extra_max = 420,
+    .press_min = 120, .press_max = 320,
+    .skip_prob = 4, .skip_min = 1200, .skip_max = 2600,
+    .use_move = true,
+    .move_every_min = 20, .move_every_max = 25,
+    .move_ms_min = 40, .move_ms_max = 70,
+};
+
+/* ---- 2 号宏：F / 0.5 秒 CD / 不挪步 ---- */
+static macro_t m2 = {
+    .key = KC_F,
+    .cd = 500,
+    .extra_min = 30,  .extra_max = 110,
+    .press_min = 40,  .press_max = 90,
+    .skip_prob = 3, .skip_min = 200, .skip_max = 500,
+    .use_move = false,
+};
+
+/* ===================== 全局 ===================== */
+static uint32_t suspend_until = 0;
+static uint32_t move_gap_ms   = 30;
+static bool     move_left_first = true;
+
+/* ===================== 通用动作 ===================== */
+static void m_release(macro_t *m) {
+    unregister_code(m->key);
+    if (m->use_move) {
+        unregister_code(KC_LEFT);
+        unregister_code(KC_RIGHT);
+    }
+    m->phase = PH_WAIT;
+}
+
+static void m_stop(macro_t *m) {
+    m_release(m);
+    m->on = false;
+}
+
+static void m_schedule(macro_t *m) {
+    uint32_t base  = m->press_start + m->cd;
+    uint32_t delay = rand_range(m->extra_min, m->extra_max);
+
+    if ((rnd16() % 100) < m->skip_prob) {
+        delay += rand_range(m->skip_min, m->skip_max);
+    }
+    m->next_press = base + delay;
+    m->phase      = PH_WAIT;
+}
+
+static void m_press(macro_t *m) {
+    register_code(m->key);
+    m->press_start = timer_read32();
+    m->until       = m->press_start + rand_range(m->press_min, m->press_max);
+    m->phase       = PH_PRESS;
+}
+
+static void m_start_move(macro_t *m, uint32_t now) {
+    m->move_ms = rand_range(m->move_ms_min, m->move_ms_max);
+
+    if (move_left_first) {
+        m->mv1 = KC_LEFT;
+        m->mv2 = KC_RIGHT;
+    } else {
+        m->mv1 = KC_RIGHT;
+        m->mv2 = KC_LEFT;
+    }
+    register_code(m->mv1);
+    m->until = now + m->move_ms;
+    m->phase = PH_MOVE_1;
+}
+
+static void stop_all(void) {
+    m_stop(&m1);
+    m_stop(&m2);
+}
+
+static void start_macro(macro_t *m) {
+    stop_all();
+    m->on          = true;
+    m->count       = 0;
+    m->move_target = rand_range(m->move_every_min, m->move_every_max);
+    suspend_until  = 0;
+    m_press(m);
+}
+
+/* ===================== 单个宏的主循环 ===================== */
+static void m_scan(macro_t *m, uint32_t now) {
+    if (!m->on) return;
+
+    if (now < suspend_until) {
+        m_release(m);
+        return;
+    }
+
+    switch (m->phase) {
+        case PH_PRESS:
+            if (now >= m->until) {
+                unregister_code(m->key);
+                m->count++;
+
+                if (m->use_move && m->count >= m->move_target) {
+                    // 等硬直结束再挪步
+                    m->until = m->press_start + m->cd + rand_range(40, 120);
+                    m->phase = PH_MOVE_WAIT;
+                } else {
+                    m_schedule(m);
+                }
+            }
+            break;
+
+        case PH_MOVE_WAIT:
+            if (now >= m->until) {
+                m_start_move(m, now);
+            }
+            break;
+
+        case PH_MOVE_1:
+            if (now >= m->until) {
+                unregister_code(m->mv1);
+                register_code(m->mv2);
+                m->until = now + move_gap_ms + m->move_ms;  // 第二段等长
+                m->phase = PH_MOVE_2;
+            }
+            break;
+
+        case PH_MOVE_2:
+            if (now >= m->until) {
+                unregister_code(m->mv2);
+                m->count       = 0;
+                m->move_target = rand_range(m->move_every_min, m->move_every_max);
+                m->next_press  = now + rand_range(120, 350);
+                m->phase       = PH_WAIT;
+            }
+            break;
+
+        case PH_WAIT:
+        default:
+            if (now >= m->next_press) {
+                m_press(m);
+            }
+            break;
     }
 }
 
-static void attack_release(void) {
-    if (pressing) {
-        unregister_code(attack_key);
-        pressing = false;
-    }
-}
-
-/* 安排下一次施法：CD + 人类延迟，偶尔漏一拍 */
-static void schedule_next(void) {
-    uint32_t base  = press_start + cd_ms;
-    uint32_t delay = rand_range(extra_min, extra_max);
-
-    if ((rnd16() % 100) < skip_prob) {
-        delay += rand_range(skip_add_min, skip_add_max);
-    }
-    next_press = base + delay;
-}
-
-static void start_macro(void) {
-    macro_on      = true;
-    suspend_until = 0;
-    attack_press();
-}
-
-static void stop_macro(void) {
-    attack_release();
-    macro_on      = false;
-    suspend_until = 0;
+/* ===================== 主循环 ===================== */
+void matrix_scan_user(void) {
+    uint32_t now = timer_read32();
+    m_scan(&m1, now);
+    m_scan(&m2, now);
 }
 
 /* ===================== 键位表 ===================== */
+/* FN 层改动：
+     P8（8）: KC_UP    -> MACRO2_TOGGLE
+     P9（9）: KC_TRNS  -> MACRO1_TOGGLE
+     P3（3）: KC_TRNS  -> MACRO_STOP（两个都停）        */
 const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
     [0] = LAYOUT_numberpad_5x4(
         LT(1,KC_NUM), KC_PSLS, KC_PAST, KC_PMNS,
@@ -113,7 +246,7 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
     ),
     [1] = LAYOUT_numberpad_5x4(
         KC_TRNS, KC_NUM,  MO(2),   KC_CALC,
-        KC_HOME, KC_UP,   MACRO_TOGGLE,
+        KC_HOME, MACRO2_TOGGLE, MACRO1_TOGGLE,
         KC_LEFT, KC_TRNS, KC_RGHT, KC_TRNS,
         KC_END,  KC_DOWN, MACRO_STOP,
         KC_LSFT,          KC_RSFT, KC_N
@@ -162,57 +295,47 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
     )
 };
 
-/* ===================== 主循环 ===================== */
-void matrix_scan_user(void) {
-    if (!macro_on) return;
-
-    uint32_t now = timer_read32();
-
-    /* ① 你在用小键盘 → 让路 */
-    if (now < suspend_until) {
-        attack_release();
-        return;
-    }
-
-    /* ② 按键保持中，到时间就松开 */
-    if (pressing) {
-        if (now >= press_until) {
-            attack_release();
-            schedule_next();
-        }
-        return;
-    }
-
-    /* ③ 到点施法 */
-    if (now >= next_press) {
-        attack_press();
-    }
-}
-
 /* ===================== 开关与让路 ===================== */
 bool process_record_user(uint16_t keycode, keyrecord_t *record) {
     if (record->event.pressed) {
-        if (keycode == MACRO_TOGGLE) {
-            if (macro_on) {
-                stop_macro();
+        if (keycode == MACRO1_TOGGLE) {
+            if (m1.on) {
+                m_stop(&m1);
             } else {
-                start_macro();
+                start_macro(&m1);
+            }
+            suspend_until = timer_read32() + 200;
+            return false;
+        }
+        if (keycode == MACRO2_TOGGLE) {
+            if (m2.on) {
+                m_stop(&m2);
+            } else {
+                start_macro(&m2);
             }
             suspend_until = timer_read32() + 200;
             return false;
         }
         if (keycode == MACRO_STOP) {
-            stop_macro();
+            stop_all();
             suspend_until = timer_read32() + 200;
             return false;
         }
-        if (macro_on) {
-            attack_release();
-            suspend_until = timer_read32() + suspend_ms;
+        if (m1.on || m2.on) {
+            m_release(&m1);
+            m_release(&m2);
+            suspend_until = timer_read32() + 500;
         }
-    } else if (macro_on && suspend_until && timer_read32() >= suspend_until) {
+    } else if ((m1.on || m2.on) && suspend_until && timer_read32() >= suspend_until) {
         suspend_until = 0;
-        next_press    = timer_read32() + rand_range(150, 500);  // 松手后像人一样稍等再按
+        if (m1.on) {
+            m1.next_press = timer_read32() + rand_range(150, 500);
+            m1.phase      = PH_WAIT;
+        }
+        if (m2.on) {
+            m2.next_press = timer_read32() + rand_range(150, 500);
+            m2.phase      = PH_WAIT;
+        }
     }
     return true;
 }
@@ -240,7 +363,7 @@ bool rgb_matrix_indicators_user(void) {
         rgb_matrix_set_color(0, 255, 255, 255);
     }
 
-    if (macro_on) {
+    if (m1.on || m2.on) {
         for (uint8_t i = 0; i < RGB_MATRIX_LED_COUNT; i++) {
             rgb_matrix_set_color(i, 60, 25, 0);
         }
