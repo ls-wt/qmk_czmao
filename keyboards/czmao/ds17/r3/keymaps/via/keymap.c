@@ -54,6 +54,7 @@ typedef enum {
     PH_PRESS,      // 正按着攻击键
     PH_MOVE_WAIT,  // 等施法硬直结束再挪步
     PH_MOVE,       // 正在挪步（只走一个方向）
+    PH_RECENTER,   // 回中补偿
 } phase_t;
 
 /* ===================== 宏结构 ===================== */
@@ -120,8 +121,38 @@ static uint32_t suspend_until = 0;
 static bool     next_move_left = true;   // 奇数次往左，偶数次往右，逐次交替
 static uint32_t pending_move_ms = 0;     // 上一方向未配对的时长，供下一次反方向等长使用
 
+/* ---- 回中（无传感器，靠记账 + 偏置） ---- */
+static uint16_t recenter_every   = 6;    // 每 6 次挪步回中一次
+static uint32_t recenter_bias_ms = 20;   // 每次回中额外向右补的毫秒
+static uint32_t recenter_max_ms  = 220;  // 单次回中最大时长
+static int32_t  drift_ms         = 0;    // 估算横向偏移：+右 -左
+static uint16_t moves_done       = 0;    // 自上次回中以来挪了几步
+static uint32_t move_start_ts    = 0;
+static uint16_t recenter_key     = KC_RIGHT;
+static uint32_t recenter_ms      = 0;
+static uint32_t recenter_start_ts = 0;
+
 /* ===================== 通用动作 ===================== */
+static void drift_add(uint32_t ms, bool is_left) {
+    drift_ms += is_left ? -(int32_t)ms : (int32_t)ms;
+}
+
 static void m_release(macro_t *m) {
+    uint32_t now = timer_read32();
+
+    /* 挪步中途被打断：按已走时长记账，避免误差累积 */
+    if (m->phase == PH_MOVE) {
+        uint32_t elapsed = now - move_start_ts;
+        if (elapsed > m->move_ms) elapsed = m->move_ms;
+        drift_add(elapsed, m->mv1 == KC_LEFT);
+        moves_done++;
+        pending_move_ms = 0;          // 配对作废，下次重新配对
+    } else if (m->phase == PH_RECENTER) {
+        uint32_t elapsed = now - recenter_start_ts;
+        if (elapsed > recenter_ms) elapsed = recenter_ms;
+        drift_add(elapsed, recenter_key == KC_LEFT);
+    }
+
     unregister_code(m->key);
     if (m->use_move) {
         unregister_code(KC_LEFT);
@@ -133,6 +164,11 @@ static void m_release(macro_t *m) {
 static void m_stop(macro_t *m) {
     m_release(m);
     m->on = false;
+
+    /* 关宏即清账：位置由使用者自己纠正，不再沿用旧估算 */
+    drift_ms        = 0;
+    moves_done      = 0;
+    pending_move_ms = 0;
 }
 
 static void m_schedule(macro_t *m) {
@@ -175,8 +211,32 @@ static void m_start_move(macro_t *m, uint32_t now) {
     next_move_left = !next_move_left;   // 下一次换另一边
 
     register_code(m->mv1);
-    m->until = now + m->move_ms;
-    m->phase = PH_MOVE;
+    move_start_ts = now;
+    m->until      = now + m->move_ms;
+    m->phase      = PH_MOVE;
+}
+
+/* 回中：把估算的偏移补回来，并额外向右补 recenter_bias_ms
+   返回 true 表示真的执行了回中动作 */
+static bool start_recenter(macro_t *m, uint32_t now) {
+    int32_t corr = -drift_ms + (int32_t)recenter_bias_ms;
+
+    if (corr > (int32_t)recenter_max_ms) corr = (int32_t)recenter_max_ms;
+    if (corr < -(int32_t)recenter_max_ms) corr = -(int32_t)recenter_max_ms;
+
+    recenter_ms = (uint32_t)(corr < 0 ? -corr : corr);
+
+    drift_ms   = 0;
+    moves_done = 0;
+
+    if (recenter_ms < 15) return false;   // 偏差太小，不值得动
+
+    recenter_key      = (corr < 0) ? KC_LEFT : KC_RIGHT;
+    recenter_start_ts = now;
+    register_code(recenter_key);
+    m->until = now + recenter_ms;
+    m->phase = PH_RECENTER;
+    return true;
 }
 
 static void stop_all(void) {
@@ -191,7 +251,6 @@ static void start_macro(macro_t *m) {
     m->move_target = rand_range(m->move_every_min, m->move_every_max);
     suspend_until  = 0;
     next_move_left = true;   // 每次启动，第一次挪步先往左
-    pending_move_ms = 0;     // 清掉上一轮未配对的时长
     m_press(m);
 }
 
@@ -229,10 +288,25 @@ static void m_scan(macro_t *m, uint32_t now) {
         case PH_MOVE:
             if (now >= m->until) {
                 unregister_code(m->mv1);
+                drift_add(m->move_ms, m->mv1 == KC_LEFT);
+                moves_done++;
                 m->count       = 0;
                 m->move_target = rand_range(m->move_every_min, m->move_every_max);
-                m->next_press  = now + rand_range(120, 350);
-                m->phase       = PH_WAIT;
+
+                /* 到次数了就回中一次，否则继续打 */
+                if (m->use_move && moves_done >= recenter_every && start_recenter(m, now)) {
+                    break;
+                }
+                m->next_press = now + rand_range(120, 350);
+                m->phase      = PH_WAIT;
+            }
+            break;
+
+        case PH_RECENTER:
+            if (now >= m->until) {
+                unregister_code(recenter_key);
+                m->next_press = now + rand_range(100, 300);
+                m->phase      = PH_WAIT;
             }
             break;
 
