@@ -5,9 +5,9 @@
 //    keyboards/czmao/ds17/r3/keymaps/via/keymap.c
 //
 //  ┌─────────────┬──────────────────┬──────────────────────────┐
-//  │  1 号宏     │ NumLock + 9      │ 攻击键 C，CD 3 秒        │
+//  │  1 号宏     │ NumLock + 9      │ 攻击键 C，CD 2 秒        │
 //  │             │ NumLock + 3      │ 停止（两个宏都停）        │
-//  │             │                  │ 每 20~25 次左右挪一步     │
+//  │             │                  │ 每 10~15 次挪一步，左右交替  │
 //  ├─────────────┼──────────────────┼──────────────────────────┤
 //  │  2 号宏     │ NumLock + 8      │ 攻击键 F，CD 0.5 秒      │
 //  │             │ NumLock + 8      │ 再按一次停止              │
@@ -38,13 +38,22 @@ static uint32_t rand_range(uint32_t a, uint32_t b) {
     return a + (rnd16() % (b - a + 1));
 }
 
+/* 正向偏置随机：取值落在 [a,b]，但更偏向大的一侧（约 2/3 处）
+   用于"宁晚不早"的施法延迟，避免在 CD 没好时提前按下 */
+static uint32_t rand_skew_high(uint32_t a, uint32_t b) {
+    uint32_t span = b - a;
+    if (span == 0) return a;
+    uint32_t u1 = rnd16() % (span + 1);
+    uint32_t u2 = rnd16() % (span + 1);
+    return a + (u1 > u2 ? u1 : u2);
+}
+
 /* ===================== 阶段 ===================== */
 typedef enum {
     PH_WAIT = 0,   // 等下次施法
     PH_PRESS,      // 正按着攻击键
     PH_MOVE_WAIT,  // 等施法硬直结束再挪步
-    PH_MOVE_1,     // 挪步第一段
-    PH_MOVE_2,     // 挪步第二段
+    PH_MOVE,       // 正在挪步（只走一个方向）
 } phase_t;
 
 /* ===================== 宏结构 ===================== */
@@ -59,6 +68,10 @@ typedef struct {
     uint8_t  skip_prob;      // 漏一拍概率
     uint32_t skip_min;       // 漏拍时额外等待
     uint32_t skip_max;
+    bool     skew_high;      // true = 延迟偏向大的一侧（宁晚不早）
+    uint8_t  long_tail_prob; // 偶尔慢半拍的概率(%)
+    uint32_t long_tail_min;
+    uint32_t long_tail_max;
     bool     use_move;       // 是否插入挪步
     uint16_t move_every_min; // 每多少下挪一次
     uint16_t move_every_max;
@@ -76,16 +89,19 @@ typedef struct {
     uint16_t mv2;
 } macro_t;
 
-/* ---- 1 号宏：C / 3 秒 CD / 带挪步 ---- */
+/* ---- 1 号宏：C / 2 秒 CD / 带挪步 ---- */
 static macro_t m1 = {
     .key = KC_C,
-    .cd = 3000,
-    .extra_min = 120, .extra_max = 420,
+    .cd = 2000,                              // 技能 CD 2 秒
+    .extra_min = 100, .extra_max = 300,      // 总间隔 2.1~2.3 秒
     .press_min = 120, .press_max = 320,
     .skip_prob = 4, .skip_min = 1200, .skip_max = 2600,
+    .skew_high = true,                       // 延迟偏大，宁晚不早
+    .long_tail_prob = 5,                     // 5% 概率慢半拍
+    .long_tail_min = 200, .long_tail_max = 500,
     .use_move = true,
-    .move_every_min = 20, .move_every_max = 25,
-    .move_ms_min = 40, .move_ms_max = 70,
+    .move_every_min = 10, .move_every_max = 15,   // 每 10~15 次挪一次
+    .move_ms_min = 60, .move_ms_max = 105,        // 原 40~70 的 1.5 倍
 };
 
 /* ---- 2 号宏：F / 0.5 秒 CD / 不挪步 ---- */
@@ -95,13 +111,14 @@ static macro_t m2 = {
     .extra_min = 30,  .extra_max = 110,
     .press_min = 40,  .press_max = 90,
     .skip_prob = 3, .skip_min = 200, .skip_max = 500,
+    .skew_high = false,
     .use_move = false,
 };
 
 /* ===================== 全局 ===================== */
 static uint32_t suspend_until = 0;
-static uint32_t move_gap_ms   = 30;
-static bool     move_left_first = true;
+static bool     next_move_left = true;   // 奇数次往左，偶数次往右，逐次交替
+static uint32_t pending_move_ms = 0;     // 上一方向未配对的时长，供下一次反方向等长使用
 
 /* ===================== 通用动作 ===================== */
 static void m_release(macro_t *m) {
@@ -120,10 +137,13 @@ static void m_stop(macro_t *m) {
 
 static void m_schedule(macro_t *m) {
     uint32_t base  = m->press_start + m->cd;
-    uint32_t delay = rand_range(m->extra_min, m->extra_max);
+    uint32_t delay = m->skew_high ? rand_skew_high(m->extra_min, m->extra_max)
+                                  : rand_range(m->extra_min, m->extra_max);
 
     if ((rnd16() % 100) < m->skip_prob) {
         delay += rand_range(m->skip_min, m->skip_max);
+    } else if ((rnd16() % 100) < m->long_tail_prob) {
+        delay += rand_range(m->long_tail_min, m->long_tail_max);
     }
     m->next_press = base + delay;
     m->phase      = PH_WAIT;
@@ -136,19 +156,27 @@ static void m_press(macro_t *m) {
     m->phase       = PH_PRESS;
 }
 
+/* 方案 B：一次挪步只走一个方向，左右逐次交替；
+   相邻两次（左、右）严格等时长，保证位置回到原点 */
 static void m_start_move(macro_t *m, uint32_t now) {
-    m->move_ms = rand_range(m->move_ms_min, m->move_ms_max);
+    if (pending_move_ms) {
+        m->move_ms      = pending_move_ms;   // 与上一次反向的那步完全一致
+        pending_move_ms = 0;
+    } else {
+        m->move_ms      = rand_range(m->move_ms_min, m->move_ms_max);
+        pending_move_ms = m->move_ms;        // 留给下一次反方向
+    }
 
-    if (move_left_first) {
+    if (next_move_left) {
         m->mv1 = KC_LEFT;
-        m->mv2 = KC_RIGHT;
     } else {
         m->mv1 = KC_RIGHT;
-        m->mv2 = KC_LEFT;
     }
+    next_move_left = !next_move_left;   // 下一次换另一边
+
     register_code(m->mv1);
     m->until = now + m->move_ms;
-    m->phase = PH_MOVE_1;
+    m->phase = PH_MOVE;
 }
 
 static void stop_all(void) {
@@ -162,6 +190,8 @@ static void start_macro(macro_t *m) {
     m->count       = 0;
     m->move_target = rand_range(m->move_every_min, m->move_every_max);
     suspend_until  = 0;
+    next_move_left = true;   // 每次启动，第一次挪步先往左
+    pending_move_ms = 0;     // 清掉上一轮未配对的时长
     m_press(m);
 }
 
@@ -196,18 +226,9 @@ static void m_scan(macro_t *m, uint32_t now) {
             }
             break;
 
-        case PH_MOVE_1:
+        case PH_MOVE:
             if (now >= m->until) {
                 unregister_code(m->mv1);
-                register_code(m->mv2);
-                m->until = now + move_gap_ms + m->move_ms;  // 第二段等长
-                m->phase = PH_MOVE_2;
-            }
-            break;
-
-        case PH_MOVE_2:
-            if (now >= m->until) {
-                unregister_code(m->mv2);
                 m->count       = 0;
                 m->move_target = rand_range(m->move_every_min, m->move_every_max);
                 m->next_press  = now + rand_range(120, 350);
