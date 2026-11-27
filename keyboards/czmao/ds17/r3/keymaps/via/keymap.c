@@ -122,9 +122,10 @@ static bool     next_move_left = true;   // 奇数次往左，偶数次往右，
 static uint32_t pending_move_ms = 0;     // 上一方向未配对的时长，供下一次反方向等长使用
 
 /* ---- 回中（无传感器，靠记账 + 偏置） ---- */
-static uint16_t recenter_every   = 6;    // 每 6 次挪步回中一次
-static uint32_t recenter_bias_ms = 20;   // 每次回中额外向右补的毫秒
+static uint16_t recenter_every   = 6;    // 每 6 次挪步检查一次账目
+static uint32_t recenter_bias_ms = 12;    // 每次回中额外向右补的毫秒（抵消真实左漂）
 static uint32_t recenter_max_ms  = 220;  // 单次回中最大时长
+static bool     session_first_left = true;  // 本局第一步往哪边（逐局交替）
 static int32_t  drift_ms         = 0;    // 估算横向偏移：+右 -左
 static uint16_t moves_done       = 0;    // 自上次回中以来挪了几步
 static uint32_t move_start_ts    = 0;
@@ -250,7 +251,11 @@ static void start_macro(macro_t *m) {
     m->count       = 0;
     m->move_target = rand_range(m->move_every_min, m->move_every_max);
     suspend_until  = 0;
-    next_move_left = true;   // 每次启动，第一次挪步先往左
+
+    /* 每次启动的第一次挪步方向逐局交替，抵消"开局先左"造成的累积偏移 */
+    next_move_left = session_first_left;
+    session_first_left = !session_first_left;
+
     m_press(m);
 }
 
