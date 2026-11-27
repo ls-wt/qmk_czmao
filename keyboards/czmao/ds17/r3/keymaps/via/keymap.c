@@ -7,7 +7,7 @@
 //  ┌─────────────┬──────────────────┬──────────────────────────┐
 //  │  1 号宏     │ NumLock + 9      │ 攻击键 C，CD 2 秒        │
 //  │             │ NumLock + 3      │ 停止（两个宏都停）        │
-//  │             │                  │ 每 10~15 次挪一步，左右交替  │
+//  │             │                  │ 每 15~20 次挪一步，左右交替  │
 //  ├─────────────┼──────────────────┼──────────────────────────┤
 //  │  2 号宏     │ NumLock + 8      │ 攻击键 F，CD 0.5 秒      │
 //  │             │ NumLock + 8      │ 再按一次停止              │
@@ -101,7 +101,7 @@ static macro_t m1 = {
     .long_tail_prob = 5,                     // 5% 概率慢半拍
     .long_tail_min = 200, .long_tail_max = 500,
     .use_move = true,
-    .move_every_min = 10, .move_every_max = 15,   // 每 10~15 次挪一次
+    .move_every_min = 15, .move_every_max = 20,   // 每 15~20 次挪一次
     .move_ms_min = 60, .move_ms_max = 105,        // 原 40~70 的 1.5 倍
 };
 
@@ -123,7 +123,7 @@ static uint32_t pending_move_ms = 0;     // 上一方向未配对的时长，供
 
 /* ---- 回中（无传感器，靠记账 + 偏置） ---- */
 static uint16_t recenter_every   = 6;    // 每 6 次挪步检查一次账目
-static uint32_t recenter_bias_ms = 12;    // 每次回中额外向右补的毫秒（抵消真实左漂）
+static uint32_t recenter_bias_ms = 4;    // 每次回中额外向右补的毫秒（抵消真实左漂）
 static uint32_t recenter_max_ms  = 220;  // 单次回中最大时长
 static bool     session_first_left = true;  // 本局第一步往哪边（逐局交替）
 static int32_t  drift_ms         = 0;    // 估算横向偏移：+右 -左
